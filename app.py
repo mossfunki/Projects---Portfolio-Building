@@ -19,9 +19,20 @@ st.set_page_config(
 
 class RealEconomicData:
     def __init__(self):
-        # Free API keys (you can get these for higher limits)
-        self.alpha_vantage_key = "TWUCOBNER9AY7F7P"  # Replace with your key: https://www.alphavantage.co/support/#api-key
-        self.fred_key = "1c76212fcbfbe9743c00403e1bac133c"  # Replace with your key: https://fred.stlouisfed.org/docs/api/api_key.html
+        # Safely get API keys from Streamlit secrets
+        try:
+            self.alpha_vantage_key = st.secrets.get("ALPHA_VANTAGE_KEY", "demo")
+            self.fred_key = st.secrets.get("FRED_KEY", "demo")
+        except:
+            # Fallback for local development
+            self.alpha_vantage_key = "demo"
+            self.fred_key = "demo"
+        
+        # Show status
+        if self.alpha_vantage_key != "demo":
+            st.sidebar.success("✅ Using real API keys")
+        else:
+            st.sidebar.warning("⚠️ Using demo keys - get real keys for better data")
         
     def get_stock_data(self, symbol):
         """Get real stock data from Alpha Vantage"""
@@ -260,6 +271,8 @@ if data_source == "Stock Market":
                         st.metric("30-Day Forecast", f"${final_forecast:.2f}")
                     with col3:
                         st.metric("Expected Change", f"{total_change:.2f}%")
+            else:
+                st.error("Could not fetch stock data. Please check the symbol or try again later.")
 
 elif data_source == "Cryptocurrency":
     st.header("₿ Cryptocurrency Analysis")
@@ -307,6 +320,8 @@ elif data_source == "Cryptocurrency":
                     fig2 = px.line(combined_df, x='date', y='price', color='type',
                                   title=f'{crypto_symbol} Price Forecast')
                     st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.error("Could not fetch cryptocurrency data. Please try again later.")
 
 elif data_source == "Economic Indicators":
     st.header("📊 Economic Indicators")
@@ -340,6 +355,8 @@ elif data_source == "Economic Indicators":
                 fig2 = px.bar(economic_data, x='year', y='gdp_growth',
                              title='US GDP Growth Rate')
                 st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.error("Could not fetch economic data. Please try again later.")
 
 elif data_source == "Inflation Data":
     st.header("💰 Inflation Analysis")
@@ -368,17 +385,18 @@ elif data_source == "Inflation Data":
                 fig = px.line(inflation_data, x='year', y='inflation_rate',
                               title='US Inflation Rate Over Time')
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.error("Could not fetch inflation data. Please try again later.")
 
 # API Key Information
 st.sidebar.markdown("---")
 st.sidebar.header("🔑 API Setup")
-st.sidebar.info("""
-**For higher rate limits:**
-1. Get free API keys from:
-   - [Alpha Vantage](https://www.alphavantage.co)
-   - [FRED](https://fred.stlouisfed.org)
+st.sidebar.info(
+    "**For higher rate limits:**\n\n"
+    "1. Get free API keys from:\n"
+    "   - [Alpha Vantage](https://www.alphavantage.co)\n"
+    "   - [FRED](https://fred.stlouisfed.org)\n\n"
+    "2. Add to Streamlit Cloud secrets"
+)
 
-2. Add to Streamlit Cloud secrets:
-```toml
-ALPHA_VANTAGE_KEY = "TWUCOBNER9AY7F7P"
-FRED_KEY = "1c76212fcbfbe9743c00403e1bac133c"
+st.success("🚀 Dashboard Ready! Select a data source above to get started.")
