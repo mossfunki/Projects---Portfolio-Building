@@ -3,592 +3,382 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import pydeck as pdk
 import requests
 from datetime import datetime, timedelta
-import time
-import json
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 import warnings
 warnings.filterwarnings('ignore')
 
-# Try to import Prophet, but provide fallback if not available
-try:
-    from prophet import Prophet
-    PROPHET_AVAILABLE = True
-except ImportError:
-    PROPHET_AVAILABLE = False
-    st.warning("Prophet not available. Using linear regression for forecasting.")
-
 # Page configuration
 st.set_page_config(
-    page_title="Real-Time Economic Dashboard",
+    page_title="Real Economic Dashboard",
     page_icon="🌍",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-class RealTimeEconomicDashboard:
+class RealEconomicData:
     def __init__(self):
-        # Safe secret handling with fallbacks
+        # Free API keys (you can get these for higher limits)
+        self.alpha_vantage_key = "TWUCOBNER9AY7F7P"  # Replace with your key: https://www.alphavantage.co/support/#api-key
+        self.fred_key = "1c76212fcbfbe9743c00403e1bac133c"  # Replace with your key: https://fred.stlouisfed.org/docs/api/api_key.html
+        
+    def get_stock_data(self, symbol):
+        """Get real stock data from Alpha Vantage"""
         try:
-            self.fred_api_key = st.secrets.get("FRED_API_KEY", "DEMO_KEY")
-            self.alpha_vantage_key = st.secrets.get("ALPHA_VANTAGE_KEY", "demo")
-        except Exception:
-            # Fallback for environments without Streamlit secrets
-            self.fred_api_key = "DEMO_KEY"
-            self.alpha_vantage_key = "demo"
-            st.info("Using demo API keys. For real data, add your API keys to Streamlit secrets.")
-        
-        self.world_bank_url = "http://api.worldbank.org/v2"
-        self.prophet_available = PROPHET_AVAILABLE
-        
-    def get_sample_economic_data(self):
-        """Generate realistic sample economic data"""
-        np.random.seed(42)
-        
-        countries = ['USA', 'Canada', 'UK', 'Germany', 'France', 'Japan', 'Australia', 'Brazil', 'India', 'China']
-        coordinates = {
-            'USA': [-95.7129, 37.0902], 'Canada': [-106.3468, 56.1304],
-            'UK': [-3.4360, 55.3781], 'Germany': [10.4515, 51.1657],
-            'France': [2.2137, 46.2276], 'Japan': [138.2529, 36.2048],
-            'Australia': [133.7751, -25.2744], 'Brazil': [-53.2, -10.3333],
-            'India': [78.9629, 20.5937], 'China': [104.1954, 35.8617]
-        }
-        
-        data = []
-        current_date = datetime.now()
-        
-        for country in countries:
-            base_gdp = np.random.uniform(500, 5000)
-            base_inflation = np.random.normal(0.025, 0.005)
-            base_unemployment = np.random.uniform(0.03, 0.08)
-            
-            for months_back in range(60, -1, -1):  # 5 years of monthly data
-                date = current_date - timedelta(days=30*months_back)
-                
-                # Add some realistic trends and seasonality
-                trend = months_back / 600  # Small upward trend
-                seasonal = np.sin(2 * np.pi * date.month / 12) * 0.01
-                
-                gdp = base_gdp * (1 + 0.02/12) ** months_back + np.random.normal(0, 10)
-                inflation = base_inflation + seasonal + np.random.normal(0, 0.002)
-                unemployment = max(0.01, base_unemployment - trend + np.random.normal(0, 0.005))
-                
-                data.append({
-                    'country': country,
-                    'date': date,
-                    'gdp': gdp,
-                    'inflation': inflation,
-                    'unemployment': unemployment,
-                    'lat': coordinates[country][1],
-                    'lon': coordinates[country][0]
-                })
-        
-        return pd.DataFrame(data)
-    
-    @st.cache_data(ttl=3600)
-    def fetch_fred_data(_self, series_id, country_name):
-        """Fetch real-time economic data from FRED API with demo fallback"""
-        # If using demo key, return sample data
-        if _self.fred_api_key == "DEMO_KEY":
-            return _self.generate_sample_fred_data(series_id, country_name)
-            
-        try:
-            url = "https://api.stlouisfed.org/fred/series/observations"
+            url = f"https://www.alphavantage.co/query"
             params = {
-                'series_id': series_id,
-                'api_key': _self.fred_api_key,
-                'file_type': 'json',
-                'observation_start': '2015-01-01'
+                'function': 'TIME_SERIES_DAILY',
+                'symbol': symbol,
+                'apikey': self.alpha_vantage_key,
+                'outputsize': 'compact'
             }
             
             response = requests.get(url, params=params, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                observations = data.get('observations', [])
+                time_series = data.get('Time Series (Daily)', {})
                 
-                df = pd.DataFrame(observations)
-                if not df.empty:
-                    df['value'] = pd.to_numeric(df['value'], errors='coerce')
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df.dropna(subset=['value'])
-                    df['country'] = country_name
-                    return df
-                    
+                dates = []
+                prices = []
+                
+                for date, values in time_series.items():
+                    dates.append(datetime.strptime(date, '%Y-%m-%d'))
+                    prices.append(float(values['4. close']))
+                
+                df = pd.DataFrame({'date': dates, 'price': prices})
+                df = df.sort_values('date').reset_index(drop=True)
+                return df
+                
         except Exception as e:
-            st.warning(f"Could not fetch FRED data for {series_id}: {e}")
+            st.warning(f"Could not fetch stock data: {e}")
             
-        # Fallback to sample data
-        return _self.generate_sample_fred_data(series_id, country_name)
+        return None
     
-    def generate_sample_fred_data(self, series_id, country_name):
-        """Generate realistic sample FRED data"""
-        dates = pd.date_range(start='2015-01-01', end=datetime.now(), freq='M')
-        
-        # Different patterns for different series
-        if 'GDP' in series_id:
-            base_value = 18000
-            growth_rate = 0.02
-            volatility = 200
-        elif 'UNRATE' in series_id:
-            base_value = 3.8
-            growth_rate = 0
-            volatility = 0.3
-        elif 'CPI' in series_id:
-            base_value = 250
-            growth_rate = 0.025
-            volatility = 2
-        else:
-            base_value = 100
-            growth_rate = 0.01
-            volatility = 5
-        
-        values = []
-        for i, date in enumerate(dates):
-            trend = base_value * (1 + growth_rate/12) ** i
-            seasonal = np.sin(2 * np.pi * date.month / 12) * volatility * 0.5
-            noise = np.random.normal(0, volatility * 0.5)
-            value = trend + seasonal + noise
-            values.append(value)
-        
-        return pd.DataFrame({
-            'date': dates,
-            'value': values,
-            'country': country_name
-        })
-    
-    @st.cache_data(ttl=86400)
-    def fetch_world_bank_data(_self, indicator, country_codes):
-        """Fetch data from World Bank API with fallback"""
+    def get_crypto_data(self, symbol="BTC"):
+        """Get real cryptocurrency data"""
         try:
-            url = f"{_self.world_bank_url}/country/{country_codes}/indicator/{indicator}"
-            params = {'format': 'json', 'per_page': 1000}
+            url = f"https://www.alphavantage.co/query"
+            params = {
+                'function': 'DIGITAL_CURRENCY_DAILY',
+                'symbol': symbol,
+                'market': 'USD',
+                'apikey': self.alpha_vantage_key
+            }
             
-            response = requests.get(url, params=params, timeout=15)
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                time_series = data.get('Time Series (Digital Currency Daily)', {})
+                
+                dates = []
+                prices = []
+                
+                for date, values in time_series.items():
+                    dates.append(datetime.strptime(date, '%Y-%m-%d'))
+                    prices.append(float(values['4a. close (USD)']))
+                
+                df = pd.DataFrame({'date': dates, 'price': prices})
+                df = df.sort_values('date').reset_index(drop=True)
+                return df
+                
+        except Exception as e:
+            st.warning(f"Could not fetch crypto data: {e}")
+            
+        return None
+    
+    def get_economic_indicators(self):
+        """Get real economic indicators from various free APIs"""
+        try:
+            # World Bank API for GDP data (free, no key needed)
+            url = "http://api.worldbank.org/v2/country/USA/indicator/NY.GDP.MKTP.CD?format=json&per_page=10"
+            response = requests.get(url, timeout=10)
+            
             if response.status_code == 200:
                 data = response.json()
                 if len(data) > 1:
-                    records = []
+                    gdp_data = []
                     for item in data[1]:
-                        if item['value'] is not None:
-                            records.append({
-                                'country': item['country']['value'],
+                        if item['value']:
+                            gdp_data.append({
                                 'year': int(item['date']),
-                                'value': float(item['value']),
-                                'indicator': indicator
+                                'gdp': float(item['value']) / 1e9  # Convert to billions
                             })
-                    return pd.DataFrame(records)
+                    
+                    return pd.DataFrame(gdp_data)
                     
         except Exception as e:
-            st.warning(f"Could not fetch World Bank data: {e}")
+            st.warning(f"Could not fetch economic indicators: {e}")
             
-        # Fallback to sample data
-        return _self.generate_sample_world_bank_data(indicator, country_codes)
+        return None
     
-    def generate_sample_world_bank_data(self, indicator, country_codes):
-        """Generate sample World Bank data"""
-        countries = country_codes.split(';')
-        years = range(2010, 2024)
-        
-        data = []
-        for country in countries:
-            country_name = {
-                'USA': 'United States', 'CAN': 'Canada', 'GBR': 'United Kingdom',
-                'DEU': 'Germany', 'FRA': 'France', 'JPN': 'Japan',
-                'AUS': 'Australia', 'BRA': 'Brazil', 'IND': 'India', 'CHN': 'China'
-            }.get(country, country)
-            
-            base_value = np.random.uniform(1000, 5000)
-            growth_rate = np.random.normal(0.03, 0.01)
-            
-            for year in years:
-                value = base_value * (1 + growth_rate) ** (year - 2010)
-                value += np.random.normal(0, value * 0.05)  # Add some noise
-                
-                data.append({
-                    'country': country_name,
-                    'year': year,
-                    'value': max(value, 0),  # Ensure positive values
-                    'indicator': indicator
-                })
-        
-        return pd.DataFrame(data)
-    
-    def get_live_market_data(self):
-        """Get simulated live market data"""
-        # Simulate real market data with some randomness
-        base_price = 450
-        hour_variation = np.sin(datetime.now().hour * np.pi / 12) * 5
-        random_change = np.random.normal(0, 2)
-        
-        current_price = base_price + hour_variation + random_change
-        change = random_change + hour_variation * 0.5
-        
-        return {
-            'price': current_price,
-            'change': change,
-            'change_percent': f"{change/current_price*100:.2f}%"
-        }
-    
-    def generate_forecast_prophet(self, df, periods=3):
-        """Generate forecasts using Facebook Prophet if available"""
-        if not self.prophet_available:
-            return self.generate_forecast_linear(df, periods)
-            
+    def get_inflation_data(self):
+        """Get inflation data from free API"""
         try:
-            prophet_df = df.rename(columns={'date': 'ds', 'value': 'y'})
-            prophet_df = prophet_df[['ds', 'y']].dropna()
+            # Using World Bank inflation data
+            url = "http://api.worldbank.org/v2/country/USA/indicator/FP.CPI.TOTL?format=json&per_page=20"
+            response = requests.get(url, timeout=10)
             
-            if len(prophet_df) < 10:
-                return None
-                
-            model = Prophet(
-                yearly_seasonality=True,
-                weekly_seasonality=False,
-                daily_seasonality=False
-            )
-            model.fit(prophet_df)
-            
-            future = model.make_future_dataframe(periods=periods, freq='M')
-            forecast = model.predict(future)
-            
-            return forecast
-            
-        except Exception as e:
-            st.warning(f"Prophet forecast failed, using linear regression: {e}")
-            return self.generate_forecast_linear(df, periods)
-    
-    def generate_forecast_linear(self, df, periods=3):
-        """Generate forecasts using linear regression"""
-        try:
-            df = df.sort_values('date').reset_index(drop=True)
-            df['time_index'] = range(len(df))
-            
-            X = df[['time_index']].values
-            y = df['value'].values
-            
-            model = LinearRegression()
-            model.fit(X, y)
-            
-            # Forecast future periods
-            last_index = df['time_index'].max()
-            future_indices = np.array([[last_index + i + 1] for i in range(periods)])
-            future_values = model.predict(future_indices)
-            
-            # Create forecast dataframe
-            last_date = df['date'].max()
-            forecast_dates = [last_date + timedelta(days=30*i) for i in range(1, periods+1)]
-            
-            forecast_df = pd.DataFrame({
-                'date': forecast_dates,
-                'value': future_values,
-                'type': 'forecast'
-            })
-            
-            return forecast_df
-            
-        except Exception as e:
-            st.error(f"Linear forecast failed: {e}")
-            return None
-    
-    def create_real_time_metrics(self):
-        """Display real-time economic metrics"""
-        st.subheader("📊 Real-Time Economic Indicators")
-        
-        market_data = self.get_live_market_data()
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric(
-                "S&P 500 ETF (Simulated)",
-                f"${market_data['price']:.2f}",
-                f"{market_data['change']:.2f} ({market_data['change_percent']})"
-            )
-        
-        with col2:
-            current_growth = np.random.normal(0.025, 0.005)
-            st.metric(
-                "Estimated GDP Growth",
-                f"{current_growth:.2%}",
-                f"{(current_growth - 0.02):.2%}"
-            )
-        
-        with col3:
-            current_inflation = np.random.normal(0.032, 0.002)
-            st.metric(
-                "Estimated Inflation",
-                f"{current_inflation:.2%}",
-                delta_color="inverse"
-            )
-        
-        with col4:
-            current_unemployment = np.random.normal(0.037, 0.001)
-            st.metric(
-                "Unemployment Rate",
-                f"{current_unemployment:.2%}",
-                f"{(0.038 - current_unemployment):.2%}"
-            )
-    
-    def create_forecasting_section(self):
-        """Create forecasting visualizations"""
-        st.subheader("🔮 Economic Forecasting")
-        
-        fred_series = {
-            'GDP': 'GDP',
-            'Unemployment Rate': 'UNRATE', 
-            'Inflation (CPI)': 'CPIAUCSL',
-            'Industrial Production': 'INDPRO'
-        }
-        
-        selected_series = st.selectbox("Select Economic Indicator", list(fred_series.keys()))
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if self.prophet_available:
-                forecast_method = st.radio(
-                    "Forecasting Method",
-                    ["Linear Regression", "Prophet (Facebook)"],
-                    horizontal=True
-                )
-            else:
-                forecast_method = "Linear Regression"
-                st.info("Using Linear Regression (Prophet not available)")
-        
-        with col2:
-            forecast_periods = st.slider("Forecast Periods (Months)", 1, 12, 6)
-        
-        if st.button("Generate Forecast"):
-            with st.spinner("Generating forecast..."):
-                series_id = fred_series[selected_series]
-                historical_data = self.fetch_fred_data(series_id, "USA")
-                
-                if not historical_data.empty:
-                    if forecast_method == "Prophet (Facebook)":
-                        forecast = self.generate_forecast_prophet(historical_data, forecast_periods)
-                    else:
-                        forecast = self.generate_forecast_linear(historical_data, forecast_periods)
+            if response.status_code == 200:
+                data = response.json()
+                if len(data) > 1:
+                    inflation_data = []
+                    for item in data[1]:
+                        if item['value']:
+                            inflation_data.append({
+                                'year': int(item['date']),
+                                'inflation': float(item['value'])
+                            })
                     
-                    self.plot_forecast(historical_data, forecast, selected_series, forecast_method)
-    
-    def plot_forecast(self, historical_data, forecast, selected_series, method):
-        """Plot historical data and forecast"""
-        fig = go.Figure()
-        
-        # Historical data
-        fig.add_trace(go.Scatter(
-            x=historical_data['date'],
-            y=historical_data['value'],
-            name='Historical',
-            line=dict(color='blue', width=2)
-        ))
-        
-        # Forecast data
-        if forecast is not None:
-            if method == "Prophet (Facebook)":
-                fig.add_trace(go.Scatter(
-                    x=forecast['ds'],
-                    y=forecast['yhat'],
-                    name='Forecast',
-                    line=dict(color='red', width=2, dash='dash')
-                ))
-                # Confidence interval
-                fig.add_trace(go.Scatter(
-                    x=forecast['ds'],
-                    y=forecast['yhat_upper'],
-                    fill=None,
-                    mode='lines',
-                    line=dict(color='red', width=0),
-                    showlegend=False
-                ))
-                fig.add_trace(go.Scatter(
-                    x=forecast['ds'],
-                    y=forecast['yhat_lower'],
-                    fill='tonexty',
-                    mode='lines',
-                    line=dict(color='red', width=0),
-                    name='Uncertainty'
-                ))
-            else:
-                fig.add_trace(go.Scatter(
-                    x=forecast['date'],
-                    y=forecast['value'],
-                    name='Forecast',
-                    line=dict(color='red', width=2, dash='dash')
-                ))
-        
-        fig.update_layout(
-            title=f"{selected_series} - Historical Data & Forecast",
-            xaxis_title="Date",
-            yaxis_title=selected_series,
-            hovermode='x unified'
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Show forecast summary
-        if forecast is not None:
-            self.show_forecast_summary(historical_data, forecast, method)
-    
-    def show_forecast_summary(self, historical_data, forecast, method):
-        """Display forecast summary metrics"""
-        st.subheader("📈 Forecast Summary")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        last_historical = historical_data['value'].iloc[-1]
-        
-        with col1:
-            if method == "Prophet (Facebook)":
-                next_forecast = forecast['yhat'].iloc[-len(forecast)//4]  # First forecast point
-            else:
-                next_forecast = forecast['value'].iloc[0]
+                    df = pd.DataFrame(inflation_data)
+                    # Calculate inflation rate
+                    df['inflation_rate'] = df['inflation'].pct_change() * 100
+                    return df
+                    
+        except Exception as e:
+            st.warning(f"Could not fetch inflation data: {e}")
             
-            change = ((next_forecast - last_historical) / last_historical) * 100
-            st.metric(
-                "Next Period Forecast",
-                f"{next_forecast:.2f}",
-                f"{change:.2f}%"
-            )
-        
-        with col2:
-            if method == "Prophet (Facebook)":
-                final_forecast = forecast['yhat'].iloc[-1]
-            else:
-                final_forecast = forecast['value'].iloc[-1]
-            
-            total_change = ((final_forecast - last_historical) / last_historical) * 100
-            st.metric(
-                "Final Forecast",
-                f"{final_forecast:.2f}",
-                f"{total_change:.2f}%"
-            )
-        
-        with col3:
-            volatility = historical_data['value'].pct_change().std() * 100
-            st.metric(
-                "Historical Volatility",
-                f"{volatility:.2f}%"
-            )
-    
-    def create_world_bank_section(self):
-        """Create section with World Bank data"""
-        st.subheader("🌐 Global Economic Data")
-        
-        world_bank_indicators = {
-            "GDP (current US$)": "NY.GDP.MKTP.CD",
-            "GDP growth (annual %)": "NY.GDP.MKTP.KD.ZG",
-            "Inflation, consumer prices (annual %)": "FP.CPI.TOTL.ZG",
-            "Unemployment (% of labor force)": "SL.UEM.TOTL.ZS"
-        }
-        
-        selected_indicator = st.selectbox("Select Indicator", list(world_bank_indicators.keys()))
-        
-        country_options = ["USA", "CAN", "GBR", "DEU", "FRA", "JPN", "AUS", "BRA", "IND", "CHN"]
-        selected_countries = st.multiselect(
-            "Select Countries",
-            country_options,
-            default=["USA", "CHN", "IND", "DEU"]
-        )
-        
-        if selected_countries and st.button("Load Data"):
-            with st.spinner("Fetching data..."):
-                country_codes = ";".join(selected_countries)
-                indicator_code = world_bank_indicators[selected_indicator]
-                
-                df = self.fetch_world_bank_data(indicator_code, country_codes)
-                
-                if not df.empty:
-                    self.plot_world_bank_data(df, selected_indicator)
-    
-    def plot_world_bank_data(self, df, indicator):
-        """Plot World Bank data"""
-        pivot_df = df.pivot(index='year', columns='country', values='value')
-        
-        fig = px.line(
-            pivot_df,
-            title=f"{indicator} - World Bank Data",
-            labels={'value': indicator, 'year': 'Year'},
-            color_discrete_sequence=px.colors.qualitative.Set3
-        )
-        
-        fig.update_layout(hovermode='x unified')
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Latest data
-        latest_year = df['year'].max()
-        latest_data = df[df['year'] == latest_year].sort_values('value', ascending=False)
-        
-        st.subheader(f"Latest Data ({latest_year})")
-        st.dataframe(
-            latest_data[['country', 'value']].rename(columns={'value': indicator}),
-            use_container_width=True
-        )
-    
-    def create_gis_map(self):
-        """Create GIS map with economic data"""
-        st.subheader("🗺️ Economic Indicators Map")
-        
-        sample_data = self.get_sample_economic_data()
-        latest_data = sample_data[sample_data['date'] == sample_data['date'].max()]
-        
-        layer = pdk.Layer(
-            "ScatterplotLayer",
-            latest_data,
-            get_position=['lon', 'lat'],
-            get_radius=500000,
-            get_fill_color=[255, 0, 0, 160],
-            get_line_color=[0, 0, 0],
-            pickable=True,
-            auto_highlight=True,
-            radius_scale=100,
-            radius_min_pixels=5,
-            radius_max_pixels=50,
-        )
-        
-        view_state = pdk.ViewState(
-            latitude=20,
-            longitude=0,
-            zoom=1,
-            pitch=0,
-        )
-        
-        tooltip = {
-            "html": "<b>{country}</b><br/>GDP: ${gdp:.2f}B<br/>Inflation: {inflation:.2%}",
-            "style": {"backgroundColor": "steelblue", "color": "white"}
-        }
-        
-        st.pydeck_chart(pdk.Deck(
-            layers=[layer],
-            initial_view_state=view_state,
-            tooltip=tooltip
-        ))
-    
-    def run_dashboard(self):
-        """Main dashboard execution"""
-        st.title("🌍 Real-Time Economic Intelligence Dashboard")
-        
-        st.info("🔍 **Note**: Using simulated data. For real data, deploy to Streamlit Cloud with API keys.")
-        
-        # Real-time metrics
-        self.create_real_time_metrics()
-        
-        # Main content
-        tab1, tab2, tab3 = st.tabs(["📊 Forecasting", "🌐 Global Data", "🗺️ GIS Map"])
-        
-        with tab1:
-            self.create_forecasting_section()
-        
-        with tab2:
-            self.create_world_bank_section()
-        
-        with tab3:
-            self.create_gis_map()
+        return None
 
-# Run the dashboard
-if __name__ == "__main__":
-    dashboard = RealTimeEconomicDashboard()
-    dashboard.run_dashboard()
+def generate_forecast(df, target_column, periods=30):
+    """Generate forecasts using multiple models"""
+    if df is None or len(df) < 10:
+        return None
+        
+    try:
+        # Prepare data
+        df = df.sort_values('date').reset_index(drop=True)
+        df['days'] = (df['date'] - df['date'].min()).dt.days
+        
+        X = df[['days']].values
+        y = df[target_column].values
+        
+        # Linear Regression forecast
+        lr_model = LinearRegression()
+        lr_model.fit(X, y)
+        
+        # Random Forest forecast
+        rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+        rf_model.fit(X, y)
+        
+        # Generate future dates
+        last_date = df['date'].max()
+        future_dates = [last_date + timedelta(days=i) for i in range(1, periods + 1)]
+        future_days = [(date - df['date'].min()).days for date in future_dates]
+        
+        # Predictions
+        lr_predictions = lr_model.predict(np.array(future_days).reshape(-1, 1))
+        rf_predictions = rf_model.predict(np.array(future_days).reshape(-1, 1))
+        
+        # Ensemble (average of both models)
+        ensemble_predictions = (lr_predictions + rf_predictions) / 2
+        
+        forecast_df = pd.DataFrame({
+            'date': future_dates,
+            'linear_forecast': lr_predictions,
+            'random_forest_forecast': rf_predictions,
+            'ensemble_forecast': ensemble_predictions
+        })
+        
+        return forecast_df
+        
+    except Exception as e:
+        st.error(f"Forecast generation failed: {e}")
+        return None
+
+# Initialize data fetcher
+data_fetcher = RealEconomicData()
+
+st.title("🌍 Real-Time Economic Dashboard")
+st.markdown("### Live Data & AI Forecasting")
+
+# Sidebar for controls
+st.sidebar.header("📊 Data Sources")
+data_source = st.sidebar.selectbox(
+    "Select Data Source",
+    ["Stock Market", "Cryptocurrency", "Economic Indicators", "Inflation Data"]
+)
+
+# Main dashboard
+if data_source == "Stock Market":
+    st.header("📈 Stock Market Analysis")
+    
+    stock_symbol = st.text_input("Enter Stock Symbol", "AAPL")
+    
+    if st.button("Get Stock Data"):
+        with st.spinner("Fetching real stock data..."):
+            stock_data = data_fetcher.get_stock_data(stock_symbol)
+            
+            if stock_data is not None:
+                # Display current price
+                current_price = stock_data['price'].iloc[-1]
+                previous_price = stock_data['price'].iloc[-2]
+                change = ((current_price - previous_price) / previous_price) * 100
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(f"{stock_symbol} Current Price", f"${current_price:.2f}")
+                with col2:
+                    st.metric("Daily Change", f"{change:.2f}%")
+                with col3:
+                    st.metric("Data Points", len(stock_data))
+                
+                # Plot historical data
+                fig = px.line(stock_data, x='date', y='price', 
+                              title=f'{stock_symbol} Price History')
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Generate and display forecast
+                st.subheader("🔮 Price Forecast (Next 30 Days)")
+                forecast = generate_forecast(stock_data, 'price', 30)
+                
+                if forecast is not None:
+                    # Combine historical and forecast data
+                    historical_df = stock_data[['date', 'price']].copy()
+                    historical_df['type'] = 'historical'
+                    
+                    forecast_df = forecast[['date', 'ensemble_forecast']].copy()
+                    forecast_df = forecast_df.rename(columns={'ensemble_forecast': 'price'})
+                    forecast_df['type'] = 'forecast'
+                    
+                    combined_df = pd.concat([historical_df, forecast_df])
+                    
+                    # Plot combined data
+                    fig2 = px.line(combined_df, x='date', y='price', color='type',
+                                  title=f'{stock_symbol} Price Forecast')
+                    st.plotly_chart(fig2, use_container_width=True)
+                    
+                    # Forecast metrics
+                    last_historical = historical_df['price'].iloc[-1]
+                    final_forecast = forecast_df['price'].iloc[-1]
+                    total_change = ((final_forecast - last_historical) / last_historical) * 100
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Current Price", f"${last_historical:.2f}")
+                    with col2:
+                        st.metric("30-Day Forecast", f"${final_forecast:.2f}")
+                    with col3:
+                        st.metric("Expected Change", f"{total_change:.2f}%")
+
+elif data_source == "Cryptocurrency":
+    st.header("₿ Cryptocurrency Analysis")
+    
+    crypto_symbol = st.selectbox("Select Cryptocurrency", 
+                                ["BTC", "ETH", "ADA", "DOT", "DOGE"])
+    
+    if st.button("Get Crypto Data"):
+        with st.spinner("Fetching cryptocurrency data..."):
+            crypto_data = data_fetcher.get_crypto_data(crypto_symbol)
+            
+            if crypto_data is not None:
+                current_price = crypto_data['price'].iloc[-1]
+                previous_price = crypto_data['price'].iloc[-2]
+                change = ((current_price - previous_price) / previous_price) * 100
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(f"{crypto_symbol} Price", f"${current_price:.2f}")
+                with col2:
+                    st.metric("Daily Change", f"{change:.2f}%")
+                with col3:
+                    st.metric("Volatility", 
+                             f"{crypto_data['price'].pct_change().std() * 100:.2f}%")
+                
+                # Plot crypto data
+                fig = px.line(crypto_data, x='date', y='price',
+                              title=f'{crypto_symbol} Price History')
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Crypto forecast
+                st.subheader("🔮 Crypto Price Forecast")
+                forecast = generate_forecast(crypto_data, 'price', 30)
+                
+                if forecast is not None:
+                    historical_df = crypto_data[['date', 'price']].copy()
+                    historical_df['type'] = 'historical'
+                    
+                    forecast_df = forecast[['date', 'ensemble_forecast']].copy()
+                    forecast_df = forecast_df.rename(columns={'ensemble_forecast': 'price'})
+                    forecast_df['type'] = 'forecast'
+                    
+                    combined_df = pd.concat([historical_df, forecast_df])
+                    
+                    fig2 = px.line(combined_df, x='date', y='price', color='type',
+                                  title=f'{crypto_symbol} Price Forecast')
+                    st.plotly_chart(fig2, use_container_width=True)
+
+elif data_source == "Economic Indicators":
+    st.header("📊 Economic Indicators")
+    
+    if st.button("Load Economic Data"):
+        with st.spinner("Fetching economic data from World Bank..."):
+            economic_data = data_fetcher.get_economic_indicators()
+            
+            if economic_data is not None:
+                st.subheader("US GDP Growth")
+                
+                # Calculate GDP growth
+                economic_data['gdp_growth'] = economic_data['gdp'].pct_change() * 100
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    current_gdp = economic_data['gdp'].iloc[-1]
+                    st.metric("Current GDP", f"${current_gdp:,.0f}B")
+                with col2:
+                    growth = economic_data['gdp_growth'].iloc[-1]
+                    st.metric("GDP Growth", f"{growth:.2f}%")
+                with col3:
+                    st.metric("Data Years", len(economic_data))
+                
+                # GDP chart
+                fig = px.line(economic_data, x='year', y='gdp',
+                              title='US GDP Over Time')
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # GDP growth chart
+                fig2 = px.bar(economic_data, x='year', y='gdp_growth',
+                             title='US GDP Growth Rate')
+                st.plotly_chart(fig2, use_container_width=True)
+
+elif data_source == "Inflation Data":
+    st.header("💰 Inflation Analysis")
+    
+    if st.button("Load Inflation Data"):
+        with st.spinner("Fetching inflation data..."):
+            inflation_data = data_fetcher.get_inflation_data()
+            
+            if inflation_data is not None:
+                st.subheader("US Inflation Rate")
+                
+                current_inflation = inflation_data['inflation_rate'].iloc[-1]
+                previous_inflation = inflation_data['inflation_rate'].iloc[-2]
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Current Inflation", f"{current_inflation:.2f}%")
+                with col2:
+                    change = current_inflation - previous_inflation
+                    st.metric("Change", f"{change:.2f}%")
+                with col3:
+                    st.metric("Average Inflation", 
+                             f"{inflation_data['inflation_rate'].mean():.2f}%")
+                
+                # Inflation chart
+                fig = px.line(inflation_data, x='year', y='inflation_rate',
+                              title='US Inflation Rate Over Time')
+                st.plotly_chart(fig, use_container_width=True)
+
+# API Key Information
+st.sidebar.markdown("---")
+st.sidebar.header("🔑 API Setup")
+st.sidebar.info("""
+**For higher rate limits:**
+1. Get free API keys from:
+   - [Alpha Vantage](https://www.alphavantage.co)
+   - [FRED](https://fred.stlouisfed.org)
+
+2. Add to Streamlit Cloud secrets:
+```toml
+ALPHA_VANTAGE_KEY = "TWUCOBNER9AY7F7P"
+FRED_KEY = "1c76212fcbfbe9743c00403e1bac133c"
